@@ -1,3 +1,31 @@
+What Method Have You Used?
+If you used AWS::EKS::Addon in CloudFormation:
+
+You have already installed the add-on
+No need for Helm installation
+Verify with: aws eks list-addons --cluster-name your-cluster-name
+If you used AWS Console EKS Add-ons section:
+
+You have already installed the add-on
+No need for Helm installation
+Verify in Console: EKS → Clusters → your-cluster → Add-ons tab
+If you used Helm:
+
+You have already installed the driver (not as an add-on)
+No need for add-on installation
+Verify with: helm list -n kube-system | grep efs
+Choose ONE method and stick with it for easier management. If you're uncertain which method was used, check both:
+
+BASH
+# Check for add-on
+aws eks list-addons --cluster-name your-cluster-name
+
+# Check for Helm installation
+helm list -n kube-system | grep aws-efs-csi-driver
+
+
+======================================
+
 # Add the aws-ebs-csi-driver Helm repository
 helm repo add aws-ebs-csi-driver https://kubernetes-sigs.github.io/aws-ebs-csi-driver
 helm repo update
