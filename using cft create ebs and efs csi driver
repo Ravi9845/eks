@@ -1,0 +1,316 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'EKS EBS and EFS CSI Driver Setup with Storage Classes'
+
+Parameters:
+  ClusterName:
+    Type: String
+    Default: test
+    Description: Name of the existing EKS cluster
+  
+  Region:
+    Type: String
+    Default: us-east-1
+    Description: AWS Region of the EKS cluster
+  
+  EFSFileSystemId:
+    Type: String
+    Description: ID of the existing EFS file system (e.g., fs-1234abcd)
+    Default: ''
+    
+Resources:
+  # Get OIDC provider URL
+  GetClusterOIDCProvider:
+    Type: Custom::GetClusterOIDCProvider
+    Properties:
+      ServiceToken: !GetAtt GetClusterOIDCProviderFunction.Arn
+      ClusterName: !Ref ClusterName
+      Region: !Ref Region
+
+  # Lambda function to get OIDC provider URL
+  GetClusterOIDCProviderFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.9
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 60
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+          
+          def handler(event, context):
+              if event['RequestType'] == 'Delete':
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                  return
+                  
+              try:
+                  # Get OIDC provider URL for the EKS cluster
+                  eks = boto3.client('eks', region_name=event['ResourceProperties']['Region'])
+                  response = eks.describe_cluster(name=event['ResourceProperties']['ClusterName'])
+                  oidc_url = response['cluster']['identity']['oidc']['issuer']
+                  oidc_provider = oidc_url.replace('https://', '')
+                  
+                  # Return the OIDC provider URL
+                  responseData = {
+                      'OIDCProviderURL': oidc_url,
+                      'OIDCProvider': oidc_provider
+                  }
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
+              except Exception as e:
+                  print(e)
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
+
+  # Lambda execution role
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: EKSDescribeAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - eks:DescribeCluster
+                Resource: !Sub arn:aws:eks:${Region}:${AWS::AccountId}:cluster/${ClusterName}
+  
+  # EBS CSI Driver IAM Role
+  EBSCSIDriverRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub AmazonEKS-EBS-CSI-DriverRole-${ClusterName}
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Sub arn:aws:iam::${AWS::AccountId}:oidc-provider/${GetClusterOIDCProvider.OIDCProvider}
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                !Sub ${GetClusterOIDCProvider.OIDCProvider}:aud: sts.amazonaws.com
+                !Sub ${GetClusterOIDCProvider.OIDCProvider}:sub: system:serviceaccount:kube-system:ebs-csi-controller-sa
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy
+  
+  # EFS CSI Driver IAM Policy
+  EFSCSIDriverPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub AmazonEKS-EFS-CSI-DriverPolicy-${ClusterName}
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - elasticfilesystem:DescribeAccessPoints
+              - elasticfilesystem:DescribeFileSystems
+              - elasticfilesystem:DescribeMountTargets
+              - elasticfilesystem:CreateAccessPoint
+              - elasticfilesystem:DeleteAccessPoint
+              - elasticfilesystem:TagResource
+              - ec2:DescribeAvailabilityZones
+            Resource: '*'
+  
+  # EFS CSI Driver IAM Role
+  EFSCSIDriverRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub AmazonEKS-EFS-CSI-DriverRole-${ClusterName}
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Sub arn:aws:iam::${AWS::AccountId}:oidc-provider/${GetClusterOIDCProvider.OIDCProvider}
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                !Sub ${GetClusterOIDCProvider.OIDCProvider}:aud: sts.amazonaws.com
+                !Sub ${GetClusterOIDCProvider.OIDCProvider}:sub: system:serviceaccount:kube-system:efs-csi-controller-sa
+      Policies:
+        - PolicyName: EFSCSIDriverPermissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - elasticfilesystem:DescribeAccessPoints
+                  - elasticfilesystem:DescribeFileSystems
+                  - elasticfilesystem:DescribeMountTargets
+                  - elasticfilesystem:CreateAccessPoint
+                  - elasticfilesystem:DeleteAccessPoint
+                  - elasticfilesystem:TagResource
+                  - ec2:DescribeAvailabilityZones
+                Resource: '*'
+
+  # EBS CSI Driver Add-on
+  EBSCSIDriverAddOn:
+    Type: AWS::EKS::Addon
+    Properties:
+      AddonName: aws-ebs-csi-driver
+      AddonVersion: v1.29.0-eksbuild.1 # Update with latest version for your EKS version
+      ClusterName: !Ref ClusterName
+      ServiceAccountRoleArn: !GetAtt EBSCSIDriverRole.Arn
+      ResolveConflicts: OVERWRITE
+    DependsOn:
+      - EBSCSIDriverRole
+      
+  # EFS CSI Driver Add-on
+  EFSCSIDriverAddOn:
+    Type: AWS::EKS::Addon
+    Properties:
+      AddonName: aws-efs-csi-driver
+      AddonVersion: v1.7.0-eksbuild.1 # Update with latest version for your EKS version
+      ClusterName: !Ref ClusterName
+      ServiceAccountRoleArn: !GetAtt EFSCSIDriverRole.Arn
+      ResolveConflicts: OVERWRITE
+    DependsOn:
+      - EFSCSIDriverRole
+      
+  # Custom resource to create storage classes
+  CreateStorageClasses:
+    Type: Custom::CreateStorageClasses
+    DependsOn: 
+      - EBSCSIDriverAddOn
+      - EFSCSIDriverAddOn
+    Properties:
+      ServiceToken: !GetAtt CreateStorageClassesFunction.Arn
+      ClusterName: !Ref ClusterName
+      Region: !Ref Region
+      EFSFileSystemId: !Ref EFSFileSystemId
+
+  # Lambda function to create storage classes
+  CreateStorageClassesFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.9
+      Handler: index.handler
+      Role: !GetAtt StorageClassesLambdaRole.Arn
+      Timeout: 300
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+          import subprocess
+          import os
+          import tempfile
+          
+          def handler(event, context):
+              if event['RequestType'] == 'Delete':
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+                  return
+                  
+              try:
+                  cluster_name = event['ResourceProperties']['ClusterName']
+                  region = event['ResourceProperties']['Region']
+                  efs_fs_id = event['ResourceProperties']['EFSFileSystemId']
+                  
+                  # Update kubeconfig
+                  subprocess.check_call(
+                      ['aws', 'eks', 'update-kubeconfig', '--name', cluster_name, '--region', region]
+                  )
+                  
+                  # Create EBS gp3 StorageClass
+                  ebs_sc = """
+                  apiVersion: storage.k8s.io/v1
+                  kind: StorageClass
+                  metadata:
+                    name: ebs-sc
+                  provisioner: ebs.csi.aws.com
+                  volumeBindingMode: WaitForFirstConsumer
+                  parameters:
+                    type: gp3
+                    encrypted: "true"
+                  reclaimPolicy: Delete
+                  allowVolumeExpansion: true
+                  """
+                  with tempfile.NamedTemporaryFile(mode='w', delete=False) as f:
+                      f.write(ebs_sc)
+                      ebs_sc_file = f.name
+                  subprocess.check_call(['kubectl', 'apply', '-f', ebs_sc_file])
+                  os.unlink(ebs_sc_file)
+                  
+                  # Create EFS StorageClass if filesystem ID is provided
+                  if efs_fs_id:
+                      efs_sc = f"""
+                      apiVersion: storage.k8s.io/v1
+                      kind: StorageClass
+                      metadata:
+                        name: efs-sc
+                      provisioner: efs.csi.aws.com
+                      parameters:
+                        provisioningMode: efs-ap
+                        fileSystemId: {efs_fs_id}
+                        directoryPerms: "700"
+                      """
+                      with tempfile.NamedTemporaryFile(mode='w', delete=False) as f:
+                          f.write(efs_sc)
+                          efs_sc_file = f.name
+                      subprocess.check_call(['kubectl', 'apply', '-f', efs_sc_file])
+                      os.unlink(efs_sc_file)
+                  
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {'Message': 'Storage Classes created successfully'})
+              except Exception as e:
+                  print(e)
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
+
+  # Role for Storage Classes Lambda
+  StorageClassesLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: EKSAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - eks:DescribeCluster
+                  - eks:ListClusters
+                Resource: !Sub arn:aws:eks:${Region}:${AWS::AccountId}:cluster/${ClusterName}
+              - Effect: Allow
+                Action:
+                  - eks:UpdateClusterConfig
+                  - eks:UpdateClusterVersion
+                Resource: !Sub arn:aws:eks:${Region}:${AWS::AccountId}:cluster/${ClusterName}
+
+Outputs:
+  EBSCSIDriverRoleArn:
+    Description: ARN of the EBS CSI Driver IAM Role
+    Value: !GetAtt EBSCSIDriverRole.Arn
+    
+  EFSCSIDriverRoleArn:
+    Description: ARN of the EFS CSI Driver IAM Role
+    Value: !GetAtt EFSCSIDriverRole.Arn
+    
+  EBSStorageClassName:
+    Description: Name of the created EBS Storage Class
+    Value: ebs-sc
+    
+  EFSStorageClassName:
+    Description: Name of the created EFS Storage Class
+    Value: efs-sc
+    Condition: HasEFSFileSystem
+    
+Conditions:
+  HasEFSFileSystem: !Not [!Equals [!Ref EFSFileSystemId, '']]
