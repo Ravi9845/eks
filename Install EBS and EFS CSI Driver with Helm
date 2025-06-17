@@ -25,6 +25,47 @@ helm list -n kube-system | grep aws-efs-csi-driver
 
 
 ======================================
+Step 2: Associate OIDC Provider with Your Cluster
+BASH
+# Check if OIDC provider exists, create if not
+eksctl utils associate-iam-oidc-provider \
+  --region ${AWS_REGION} \
+  --cluster ${CLUSTER_NAME} \
+  --approve
+Step 3: Install EBS CSI Driver using Helm
+Create IAM Role for EBS CSI Driver
+BASH
+# Create IAM policy document for trust relationship
+cat <<EOF > ebs-trust-policy.json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::${AWS_ACCOUNT_ID}:oidc-provider/$(aws eks describe-cluster --name ${CLUSTER_NAME} --query "cluster.identity.oidc.issuer" --output text | sed 's|https://||')"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "$(aws eks describe-cluster --name ${CLUSTER_NAME} --query "cluster.identity.oidc.issuer" --output text | sed 's|https://||'):sub": "system:serviceaccount:kube-system:ebs-csi-controller-sa",
+          "$(aws eks describe-cluster --name ${CLUSTER_NAME} --query "cluster.identity.oidc.issuer" --output text | sed 's|https://||'):aud": "sts.amazonaws.com"
+        }
+      }
+    }
+  ]
+}
+EOF
+
+# Create IAM role
+aws iam create-role \
+  --role-name AmazonEKS-EBS-CSI-DriverRole-${CLUSTER_NAME} \
+  --assume-role-policy-document file://ebs-trust-policy.json
+
+# Attach AWS managed policy for EBS CSI Driver
+aws iam attach-role-policy \
+  --role-name AmazonEKS-EBS-CSI-DriverRole-${CLUSTER_NAME} \
+  --policy-arn arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy
 
 # Add the aws-ebs-csi-driver Helm repository
 helm repo add aws-ebs-csi-driver https://kubernetes-sigs.github.io/aws-ebs-csi-driver
@@ -41,7 +82,67 @@ helm upgrade --install aws-ebs-csi-driver aws-ebs-csi-driver/aws-ebs-csi-driver 
   --set node.serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=arn:aws:iam::${AWS_ACCOUNT_ID}:role/AmazonEKS-EBS-CSI-DriverRole-${CLUSTER_NAME}
 
 =====================================
+Step 4: Install EFS CSI Driver using Helm
+Create IAM Policy for EFS CSI Driver
+BASH
+# Create EFS IAM policy
+cat <<EOF > efs-policy.json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "elasticfilesystem:DescribeAccessPoints",
+        "elasticfilesystem:DescribeFileSystems",
+        "elasticfilesystem:DescribeMountTargets",
+        "elasticfilesystem:CreateAccessPoint",
+        "elasticfilesystem:DeleteAccessPoint",
+        "elasticfilesystem:TagResource",
+        "ec2:DescribeAvailabilityZones"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
+EOF
 
+aws iam create-policy \
+  --policy-name AmazonEKS-EFS-CSI-DriverPolicy-${CLUSTER_NAME} \
+  --policy-document file://efs-policy.json
+Create IAM Role for EFS CSI Driver
+BASH
+# Create IAM policy document for trust relationship
+cat <<EOF > efs-trust-policy.json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::${AWS_ACCOUNT_ID}:oidc-provider/$(aws eks describe-cluster --name ${CLUSTER_NAME} --query "cluster.identity.oidc.issuer" --output text | sed 's|https://||')"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "$(aws eks describe-cluster --name ${CLUSTER_NAME} --query "cluster.identity.oidc.issuer" --output text | sed 's|https://||'):sub": "system:serviceaccount:kube-system:efs-csi-controller-sa",
+          "$(aws eks describe-cluster --name ${CLUSTER_NAME} --query "cluster.identity.oidc.issuer" --output text | sed 's|https://||'):aud": "sts.amazonaws.com"
+        }
+      }
+    }
+  ]
+}
+EOF
+
+# Create IAM role
+aws iam create-role \
+  --role-name AmazonEKS-EFS-CSI-DriverRole-${CLUSTER_NAME} \
+  --assume-role-policy-document file://efs-trust-policy.json
+
+# Attach policy to role
+aws iam attach-role-policy \
+  --role-name AmazonEKS-EFS-CSI-DriverRole-${CLUSTER_NAME} \
+  --policy-arn arn:aws:iam::${AWS_ACCOUNT_ID}:policy/AmazonEKS-EFS-CSI-DriverPolicy-${CLUSTER_NAME}
 # Add the aws-efs-csi-driver Helm repository
 helm repo add aws-efs-csi-driver https://kubernetes-sigs.github.io/aws-efs-csi-driver
 helm repo update
