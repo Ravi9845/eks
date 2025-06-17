@@ -68,52 +68,82 @@ Run: kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-ebs-csi-drive
 You should see pods running for the controller and node components
 
 ===============================================================================================================
-Step 1: Create IAM Role for EFS CSI Driver
-Go to the IAM Console
+# IAM Role Requirements for EFS CSI Driver Add-On Installation
 
-Navigate to https://console.aws.amazon.com/iam
-Create Policy
+Yes, you need to create an IAM role for the service account **before** installing the EFS CSI Driver as an EKS add-on. Here's the correct sequence:
 
-Click on Policies in the left navigation
-Click Create policy
-Switch to the JSON tab and paste the following policy:
-JSON
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Action": [
-        "elasticfilesystem:DescribeAccessPoints",
-        "elasticfilesystem:DescribeFileSystems",
-        "elasticfilesystem:DescribeMountTargets",
-        "elasticfilesystem:CreateAccessPoint",
-        "elasticfilesystem:DeleteAccessPoint",
-        "elasticfilesystem:TagResource",
-        "ec2:DescribeAvailabilityZones"
-      ],
-      "Resource": "*"
-    }
-  ]
-}
-Click Next: Tags
-Click Next: Review
-Name the policy AmazonEKS-EFS-CSI-DriverPolicy
-Click Create policy
-Create IAM Role
+## Prerequisite: Create IAM Role for EFS CSI Driver
 
-Click on Roles in the left navigation
-Click Create role
-Select Web identity
-For Identity provider, select the OIDC provider you created earlier
-For Audience, select sts.amazonaws.com
-Expand Options and add the following condition:
-Condition: StringEquals
-Key: [Your OIDC Provider]:sub
-Value: system:serviceaccount:kube-system:efs-csi-controller-sa
-Click Next
-Search for and select the AmazonEKS-EFS-CSI-DriverPolicy you just created
-Click Next
-Role name: AmazonEKS-EFS-CSI-DriverRole-[Your Cluster Name]
-Description: Role for EFS CSI Driver on EKS Cluster
-Click Create role
+1. **Create IAM Policy**
+   - Go to the **IAM Console**: https://console.aws.amazon.com/iam
+   - Click on **Policies** > **Create policy**
+   - Switch to the **JSON** tab and paste:
+     ```json
+     {
+       "Version": "2012-10-17",
+       "Statement": [
+         {
+           "Effect": "Allow",
+           "Action": [
+             "elasticfilesystem:DescribeAccessPoints",
+             "elasticfilesystem:DescribeFileSystems",
+             "elasticfilesystem:DescribeMountTargets",
+             "elasticfilesystem:CreateAccessPoint",
+             "elasticfilesystem:DeleteAccessPoint",
+             "elasticfilesystem:TagResource",
+             "ec2:DescribeAvailabilityZones"
+           ],
+           "Resource": "*"
+         }
+       ]
+     }
+     ```
+   - Name it `AmazonEKS-EFS-CSI-DriverPolicy`
+   - Click **Create policy**
+
+2. **Create IAM Role with OIDC Trust Relationship**
+   - Click on **Roles** > **Create role**
+   - Select **Web identity**
+   - For **Identity provider**, select your cluster's OIDC provider
+   - For **Audience**, select `sts.amazonaws.com`
+   - Add the following condition:
+     - **Condition**: StringEquals
+     - **Key**: `<your-oidc-provider>:sub`
+     - **Value**: `system:serviceaccount:kube-system:efs-csi-controller-sa`
+   - Click **Next**
+   - Search for and select the `AmazonEKS-EFS-CSI-DriverPolicy` you created
+   - Click **Next**
+   - Name the role `AmazonEKS-EFS-CSI-DriverRole-<cluster-name>`
+   - Click **Create role**
+
+## Step 1: Install EFS CSI Driver Add-On through AWS Console
+
+**Only after** creating the IAM role, proceed with installing the EFS CSI Driver add-on:
+
+1. Navigate to EKS Add-ons
+2. Select your cluster and go to the Add-ons tab
+3. Click **Get more add-ons**
+4. Find and select **Amazon EFS CSI Driver**
+5. Select the latest version
+6. Under **Service account role**, select **Use existing role**
+7. Choose the role you just created
+8. Click **Next** > **Create**
+
+## Important Notes:
+
+1. **Service Account Name**: The EKS add-on will create the service account named `efs-csi-controller-sa` in the `kube-system` namespace. This must match what you specified in the IAM role condition.
+
+2. **OIDC Provider**: Make sure the OIDC provider for your cluster exists before creating the role. If not, create it first:
+   ```bash
+   eksctl utils associate-iam-oidc-provider \
+     --region us-east-1 \
+     --cluster dm-rule-server-smarts-qa \
+     --approve
+   ```
+
+3. **Role Verification**: After creating the role, you can verify the trust relationship in the IAM console:
+   - Go to the role details
+   - Click on the **Trust relationships** tab
+   - The trust policy should include your EKS cluster's OIDC provider and the service account condition
+
+This role-first, add-on-second approach ensures that when the EFS CSI Driver is installed, it has the necessary permissions to manage EFS resources in your AWS account.
