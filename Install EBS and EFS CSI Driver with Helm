@@ -1,0 +1,26 @@
+# Add the aws-ebs-csi-driver Helm repository
+helm repo add aws-ebs-csi-driver https://kubernetes-sigs.github.io/aws-ebs-csi-driver
+helm repo update
+
+# Install the chart
+helm upgrade --install aws-ebs-csi-driver aws-ebs-csi-driver/aws-ebs-csi-driver \
+  --namespace kube-system \
+  --set controller.serviceAccount.create=true \
+  --set controller.serviceAccount.name=ebs-csi-controller-sa \
+  --set controller.serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=arn:aws:iam::${AWS_ACCOUNT_ID}:role/AmazonEKS-EBS-CSI-DriverRole-${CLUSTER_NAME} \
+  --set node.serviceAccount.create=true \
+  --set node.serviceAccount.name=ebs-csi-node-sa \
+  --set node.serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=arn:aws:iam::${AWS_ACCOUNT_ID}:role/AmazonEKS-EBS-CSI-DriverRole-${CLUSTER_NAME}
+
+=====================================
+
+# Add the aws-efs-csi-driver Helm repository
+helm repo add aws-efs-csi-driver https://kubernetes-sigs.github.io/aws-efs-csi-driver
+helm repo update
+
+# Install the chart
+helm upgrade --install aws-efs-csi-driver aws-efs-csi-driver/aws-efs-csi-driver \
+  --namespace kube-system \
+  --set controller.serviceAccount.create=true \
+  --set controller.serviceAccount.name=efs-csi-controller-sa \
+  --set controller.serviceAccount.annotations."eks\.amazonaws\.com/role-arn"=arn:aws:iam::${AWS_ACCOUNT_ID}:role/AmazonEKS-EFS-CSI-DriverRole-${CLUSTER_NAME}
