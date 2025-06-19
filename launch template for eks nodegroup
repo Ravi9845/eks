@@ -1,0 +1,44 @@
+While creating launch template for eks nodegroup following value should be added in Launch Template:
+  - AMI: ami-123 (custom AMI with your app dependencies)
+  - Instance Type: m5.large
+  - Storage: 100GB gp3 volume
+  - Security Groups: sg-123 (your custom security rules)
+  - User Data: Bootstrap script to join cluster
+
+📋 Node Group Configuration:
+  - Subnets: subnet-123abc, subnet-456def (production subnets)
+  - IAM Role: eks-node-role (permissions for nodes)
+  - Scaling Configuration: Min 2, Max 6 nodes
+  
+ Note: Subnets and IAM Role profile should not be added in Launch Template
+  
+  ===========================================================================
+  
+Note; If we define AMI in eks nodegroup Launch Template then we need to define the bootstrapping script in userdata section of Launch Template so that worker node would know to join the cluster. (add following V2 and V3 in user data)
+
+V2 AMI
+#!/bin/bash
+set -o xtrace
+/etc/eks/bootstrap.sh ${ClusterName} ${BootstrapArguments}
+or 
+ awsRegion=$(curl -s http://169.254.169.254/latest/dynamic/instance-identity/document | jq -r .region)
+ endpoint=$(aws eks describe-cluster --query "cluster.endpoint" --output text --name ${ClusterName} --region $awsRegion)
+ cacert=$(aws eks describe-cluster --query "cluster.certificateAuthority.data" --output text --name ${ClusterName} --region $awsRegion)
+ /etc/eks/bootstrap.sh ${ClusterName} --b64-cluster-ca $cacert --apiserver-endpoint $endpoint
+
+  
+ V3 Image
+  
+ V3 
+---
+#!/bin/bash
+apiVersion: node.eks.aws/v1alpha1
+kind: NodeConfig
+spec:
+  cluster:
+    name: my-cluster
+    apiServerEndpoint: https://example.com
+    certificateAuthority: Y2VydGlmaWNhdGVBdXRob3JpdHk=
+    cidr: 10.100.0.0/00 (Service IPv4 range)
+	
+Note: we will get apiServerEndpoint,certificateAuthority and cidr in our eks cluster
